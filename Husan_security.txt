@@ -1,0 +1,209 @@
+
+from flask import Flask, request, render_template_string
+from urllib.parse import urlparse
+import socket
+import hashlib
+import os
+
+app = Flask(__name__)
+
+HTML = """
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Husan Security</title>
+<style>
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+}
+header {
+    padding: 25px;
+    background: #111827;
+    text-align: center;
+    border-bottom: 2px solid #2563eb;
+}
+header h1 { color: #60a5fa; margin: 0; }
+nav { text-align: center; padding: 20px; }
+button {
+    background: #2563eb;
+    color: white;
+    border: 0;
+    padding: 12px 18px;
+    margin: 5px;
+    border-radius: 7px;
+    cursor: pointer;
+}
+main { max-width: 850px; margin: auto; padding: 20px; }
+section {
+    background: #1e293b;
+    padding: 22px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+}
+input {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 12px;
+    margin: 10px 0;
+    border-radius: 6px;
+    border: 1px solid #475569;
+    background: #0f172a;
+    color: white;
+}
+.result {
+    padding: 14px;
+    margin-top: 15px;
+    background: #334155;
+    border-radius: 7px;
+    overflow-wrap: anywhere;
+}
+.hidden { display: none; }
+small { color: #94a3b8; }
+</style>
+</head>
+<body>
+<header>
+<h1>🛡️ Husan Security</h1>
+<p>Axborot xavfsizligini tekshirish vositasi</p>
+</header>
+
+<nav>
+<button onclick="showTab('url')">URL tahlili</button>
+<button onclick="showTab('domain')">Domen tahlili</button>
+<button onclick="showTab('file')">Fayl tahlili</button>
+</nav>
+
+<main>
+<section id="url">
+<h2>URL tahlili</h2>
+<form method="post">
+<input type="hidden" name="action" value="url">
+<input name="url" placeholder="https://example.com" required>
+<button type="submit">Havolani tekshirish</button>
+</form>
+{% if result and kind == 'url' %}
+<div class="result"><b>Natija:</b><br>{{ result }}</div>
+{% endif %}
+</section>
+
+<section id="domain" class="hidden">
+<h2>Domen tahlili</h2>
+<form method="post">
+<input type="hidden" name="action" value="domain">
+<input name="domain" placeholder="example.com" required>
+<button type="submit">Domenni tekshirish</button>
+</form>
+{% if result and kind == 'domain' %}
+<div class="result"><b>Natija:</b><br>{{ result }}</div>
+{% endif %}
+</section>
+
+<section id="file" class="hidden">
+<h2>Fayl tahlili</h2>
+<form method="post" enctype="multipart/form-data">
+<input type="hidden" name="action" value="file">
+<input type="file" name="file" required>
+<button type="submit">Faylni tekshirish</button>
+</form>
+{% if result and kind == 'file' %}
+<div class="result"><b>Natija:</b><br>{{ result }}</div>
+{% endif %}
+</section>
+<p><small>Husan Security — mahalliy tekshiruv vositasi. Natijalar fayl yoki sayt mutlaqo xavfsizligini kafolatlamaydi.</small></p>
+</main>
+
+<script>
+function showTab(id) {
+    document.querySelectorAll('main section').forEach(
+        s => s.classList.add('hidden')
+    );
+    document.getElementById(id).classList.remove('hidden');
+}
+</script>
+</body>
+</html>
+"""
+
+@app.route("/", methods=["GET", "POST"])
+def home():
+    result = ""
+    kind = ""
+
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        kind = action
+
+        if action == "url":
+            value = request.form.get("url", "").strip()
+            parsed = urlparse(value)
+            warnings = []
+
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                result = "URL formati noto‘g‘ri."
+            else:
+                if parsed.scheme != "https":
+                    warnings.append("HTTPS ishlatilmayapti.")
+                if "@" in parsed.netloc:
+                    warnings.append("Manzilda @ belgisi mavjud.")
+                if len(value) > 100:
+                    warnings.append("URL juda uzun.")
+                if parsed.hostname.startswith("xn--") or ".xn--" in parsed.hostname:
+                    warnings.append("Domen Punycode formatida.")
+
+                result = (
+                    "E'tibor talab qiladigan belgilar: " + " ".join(warnings)
+                    if warnings else
+                    "Oddiy tekshiruvda shubhali belgi topilmadi. Bu xavfsizlik kafolati emas."
+                )
+
+        elif action == "domain":
+            domain = request.form.get("domain", "").strip()
+            domain = domain.removeprefix("https://").removeprefix("http://")
+            domain = domain.split("/")[0].split(":")[0]
+
+            try:
+                if not domain or " " in domain:
+                    raise ValueError()
+                addresses = sorted({
+                    item[4][0] for item in socket.getaddrinfo(
+                        domain, None, type=socket.SOCK_STREAM
+                    )
+                })
+                result = "Domen: " + domain + "\nIP manzillar: " + ", ".join(addresses)
+            except (socket.gaierror, ValueError, OSError):
+                result = "Domen aniqlanmadi yoki DNS orqali tekshirib bo‘lmadi."
+
+        elif action == "file":
+            uploaded = request.files.get("file")
+            if not uploaded or not uploaded.filename:
+                result = "Fayl tanlanmadi."
+            else:
+                data = uploaded.stream.read(20 * 1024 * 1024 + 1)
+                if len(data) > 20 * 1024 * 1024:
+                    result = "Fayl hajmi 20 MB dan oshmasligi kerak."
+                else:
+                    digest = hashlib.sha256(data).hexdigest()
+                    extension = os.path.splitext(uploaded.filename)[1].lower()
+                    warnings = []
+                    if extension in (".exe", ".dll", ".bat", ".cmd", ".scr", ".ps1"):
+                        warnings.append("Fayl bajariladigan yoki skript turiga kiradi.")
+                    if data.startswith(b"MZ"):
+                        warnings.append("Windows PE fayliga xos MZ belgisi topildi.")
+
+                    result = (
+                        f"Fayl nomi: {uploaded.filename}\n"
+                        f"Hajmi: {len(data)} bayt\n"
+                        f"SHA-256: {digest}\n"
+                        f"Tekshiruv: {'; '.join(warnings) if warnings else 'Faqat asosiy belgilar tekshirildi.'}"
+                    )
+
+    return render_template_string(HTML, result=result, kind=kind)
+
+if __name__ == "__main__":
+    print("Husan Security: http://127.0.0.1:5000")
+    app.run(host="127.0.0.1", port=5000, debug=False)
