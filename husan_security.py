@@ -2,7 +2,6 @@
 import os
 import re
 import io
-import json
 import base64
 import socket
 import hashlib
@@ -13,10 +12,7 @@ import requests
 from flask import Flask, request, render_template_string
 from urllib.parse import urlparse
 
-MAX_SIZE = 20 * 1024 * 1024
-TIMEOUT = 10
 
-app = Flask(__name__)
 # =====================================================
 # 1. UMUMIY SOZLAMALAR
 # =====================================================
@@ -24,6 +20,7 @@ app = Flask(__name__)
 MAX_SIZE = 20 * 1024 * 1024
 TIMEOUT = 10
 
+app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_SIZE
 
 VT_API_KEY = os.getenv("VIRUSTOTAL_API_KEY", "")
@@ -48,6 +45,8 @@ EXECUTABLE_EXTENSIONS = {
 # =====================================================
 
 def risk_result(score, evidence, unknown=False):
+    score = max(0, min(score, 100))
+
     if unknown:
         level = "NOMA'LUM"
         recommendation = (
@@ -75,7 +74,7 @@ def risk_result(score, evidence, unknown=False):
 
     return {
         "level": level,
-        "score": min(score, 100),
+        "score": score,
         "evidence": evidence,
         "recommendation": recommendation
     }
@@ -103,10 +102,13 @@ def normalize_domain(value):
     except UnicodeError:
         raise ValueError("Domen kodlash xatosi.")
 
-    if not re.fullmatch(
-        r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}",
-        domain
-    ):
+    pattern = (
+        r"(?=.{1,253}$)"
+        r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+        r"[a-z]{2,63}"
+    )
+
+    if not re.fullmatch(pattern, domain):
         raise ValueError("Domen nomi noto'g'ri.")
 
     return domain
@@ -125,8 +127,12 @@ def dns_lookup(domain):
     except (socket.gaierror, OSError):
         result["IP manzillar"] = []
 
-    result["MX"] = "Bu versiyada alohida DNS kutubxonasi ulanmagan."
-    result["NS"] = "Bu versiyada alohida DNS kutubxonasi ulanmagan."
+    result["MX"] = (
+        "Bu versiyada alohida DNS kutubxonasi ulanmagan."
+    )
+    result["NS"] = (
+        "Bu versiyada alohida DNS kutubxonasi ulanmagan."
+    )
 
     return result
 
@@ -136,11 +142,10 @@ def dns_lookup(domain):
 # =====================================================
 
 def vt_request(endpoint):
-    """VirusTotal API so'rovini bajaradi; maxfiy kalitni oshkor qilmaydi."""
     if not VT_API_KEY:
         return {
             "status": "unavailable",
-            "message": "VirusTotal API kaliti server muhitida topilmadi."
+            "message": "VirusTotal API kaliti sozlanmagan."
         }
 
     try:
@@ -154,27 +159,18 @@ def vt_request(endpoint):
             return {
                 "status": "not_found",
                 "message": (
-                    "VirusTotal bazasida ushbu obyekt uchun hisobot topilmadi. "
-                    "Bu obyekt xavfsizligini anglatmaydi."
+                    "VirusTotal bazasida hisobot topilmadi. "
+                    "Bu xavfsizlik kafolati emas."
                 )
             }
 
-        if response.status_code == 401:
+        if response.status_code in (401, 403, 429):
             return {
                 "status": "unavailable",
-                "message": "VirusTotal API kaliti noto'g'ri yoki yaroqsiz (401)."
-            }
-
-        if response.status_code == 403:
-            return {
-                "status": "unavailable",
-                "message": "VirusTotal API so'roviga ruxsat berilmadi (403)."
-            }
-
-        if response.status_code == 429:
-            return {
-                "status": "unavailable",
-                "message": "VirusTotal so'rov chegarasi tugadi (429). Keyinroq urinib ko'ring."
+                "message": (
+                    "VirusTotal so'rovi rad etildi. "
+                    "API kaliti yoki so'rov limitini tekshiring."
+                )
             }
 
         response.raise_for_status()
@@ -187,15 +183,13 @@ def vt_request(endpoint):
     except requests.Timeout:
         return {
             "status": "unavailable",
-            "message": "VirusTotal javobi belgilangan vaqtda kelmadi (timeout)."
+            "message": "VirusTotal javobi vaqtida kelmadi."
         }
-
     except requests.RequestException:
         return {
             "status": "unavailable",
-            "message": "VirusTotal bilan aloqa amalga oshmadi. Tarmoq yoki API holatini tekshiring."
+            "message": "VirusTotal bilan aloqa amalga oshmadi."
         }
-
     except ValueError:
         return {
             "status": "unavailable",
@@ -221,8 +215,7 @@ def vt_analysis(endpoint):
         "malicious": stats.get("malicious", 0),
         "suspicious": stats.get("suspicious", 0),
         "harmless": stats.get("harmless", 0),
-        "undetected": stats.get("undetected", 0),
-        "stats": stats
+        "undetected": stats.get("undetected", 0)
     }
 
 
@@ -254,8 +247,8 @@ def google_safe_browsing(url):
         }
 
     endpoint = (
-        "https://safebrowsing.googleapis.com/v4/threatMatches:find"
-        "?key=" + GSB_API_KEY
+        "https://safebrowsing.googleapis.com/v4/"
+        "threatMatches:find?key=" + GSB_API_KEY
     )
 
     payload = {
@@ -282,19 +275,22 @@ def google_safe_browsing(url):
             json=payload,
             timeout=TIMEOUT
         )
-
         response.raise_for_status()
-        data = response.json()
 
         return {
             "status": "success",
-            "matches": data.get("matches", [])
+            "matches": response.json().get("matches", [])
         }
 
     except requests.RequestException:
         return {
             "status": "unavailable",
             "message": "Google Safe Browsing bilan aloqa amalga oshmadi."
+        }
+    except ValueError:
+        return {
+            "status": "unavailable",
+            "message": "Google Safe Browsing javobini o'qib bo'lmadi."
         }
 
 
@@ -313,7 +309,9 @@ def analyze_url(value, consent_vt=False, consent_gsb=False):
         parsed = urlparse(value)
 
         if parsed.scheme not in ("http", "https"):
-            raise ValueError("URL faqat HTTP yoki HTTPS bo'lishi kerak.")
+            raise ValueError(
+                "URL faqat HTTP yoki HTTPS bo'lishi kerak."
+            )
 
         hostname = parsed.hostname
 
@@ -322,7 +320,7 @@ def analyze_url(value, consent_vt=False, consent_gsb=False):
 
         if parsed.username or parsed.password or "@" in parsed.netloc:
             evidence.append(
-                "URL ichida foydalanuvchini chalg'itishi mumkin bo'lgan @ belgisi mavjud."
+                "URL ichida chalg'ituvchi @ belgisi mavjud."
             )
             score += 30
             threat_types.append("Spoofing ehtimoli")
@@ -342,19 +340,23 @@ def analyze_url(value, consent_vt=False, consent_gsb=False):
 
         try:
             ipaddress.ip_address(hostname)
-            evidence.append("URL domen o'rniga to'g'ridan-to'g'ri IP ishlatmoqda.")
+            evidence.append(
+                "URL domen o'rniga to'g'ridan-to'g'ri IP ishlatmoqda."
+            )
             score += 20
             threat_types.append("Shubhali manzil")
         except ValueError:
             pass
 
         found_words = [
-            word for word in SUSPICIOUS_WORDS if word in value.lower()
+            word for word in SUSPICIOUS_WORDS
+            if word in value.lower()
         ]
 
         if found_words:
             evidence.append(
-                "Shubhali kalit so'zlar: " + ", ".join(found_words)
+                "Shubhali kalit so'zlar: " +
+                ", ".join(found_words)
             )
             score += min(20, len(found_words) * 5)
             threat_types.append("Phishing ehtimoli")
@@ -381,7 +383,7 @@ def analyze_url(value, consent_vt=False, consent_gsb=False):
                     score = max(score, 80)
                 else:
                     evidence.append(
-                        "Google Safe Browsing tekshiruvi bajarildi: "
+                        "Google Safe Browsing tekshiruvida "
                         "ma'lum xavfli ro'yxatda moslik topilmadi."
                     )
             else:
@@ -400,15 +402,11 @@ def analyze_url(value, consent_vt=False, consent_gsb=False):
 
                 malicious = vt.get("malicious", 0)
                 suspicious = vt.get("suspicious", 0)
-                harmless = vt.get("harmless", 0)
-                undetected = vt.get("undetected", 0)
 
                 evidence.append(
-                    "VirusTotal hisoboti olindi: zararli aniqlashlar = "
-                    + str(malicious)
-                    + ", shubhali = " + str(suspicious)
-                    + ", harmless = " + str(harmless)
-                    + ", aniqlanmagan = " + str(undetected) + "."
+                    "VirusTotal: zararli aniqlashlar = " +
+                    str(malicious) +
+                    ", shubhali = " + str(suspicious)
                 )
 
                 if malicious > 0:
@@ -416,54 +414,39 @@ def analyze_url(value, consent_vt=False, consent_gsb=False):
                     threat_types.append(
                         "VirusTotal zararli URL indikatori"
                     )
-
                 elif suspicious > 0:
                     score = max(score, 40)
                     threat_types.append(
                         "Shubhali URL reputatsiyasi"
                     )
-
                 else:
                     evidence.append(
-                        "VirusTotal hisobotida zararli yoki shubhali "
-                        "aniqlash qayd etilmadi. Bu mutlaq xavfsizlik kafolati emas."
+                        "VirusTotal hisobotida zararli aniqlash "
+                        "qayd etilmadi. Bu xavfsizlik kafolati emas."
                     )
-
             else:
                 evidence.append(
                     "VirusTotal: " +
-                    vt.get("message", "Tashqi tekshiruv bajarilmadi.")
+                    vt.get("message", "Tekshiruv bajarilmadi.")
                 )
-
         else:
             evidence.append(
-                "VirusTotal tekshiruvi rozilik berilmagani sababli bajarilmadi."
+                "VirusTotal rozilik berilmagani sababli ishlatilmadi."
             )
 
         if not evidence:
-            evidence.append(
-                "Mahalliy tekshiruvda shubhali indikator topilmadi."
-            )
+            evidence.append("Mahalliy tekshiruvda indikator topilmadi.")
 
         unknown = score == 0 and not successful_checks
 
-        report = risk_result(
-            score,
-            evidence,
-            unknown=unknown
-        )
+        report = risk_result(score, evidence, unknown)
 
         report["threat_types"] = sorted(set(threat_types))
-
-        if successful_checks:
-            report["source"] = (
-                "Mahalliy tahlil + " + " + ".join(successful_checks)
-            )
-        else:
-            report["source"] = (
-                "Faqat mahalliy tahlil; tashqi reputatsiya tasdiqlanmadi"
-            )
-
+        report["source"] = (
+            "Mahalliy tahlil + " + " + ".join(successful_checks)
+            if successful_checks
+            else "Faqat mahalliy tahlil; tashqi reputatsiya tasdiqlanmadi"
+        )
         report["external_checks"] = {
             "attempted": attempted_checks,
             "successful": successful_checks
@@ -473,9 +456,7 @@ def analyze_url(value, consent_vt=False, consent_gsb=False):
 
     except ValueError as error:
         return risk_result(
-            0,
-            ["URL xatosi: " + str(error)],
-            unknown=True
+            0, ["URL xatosi: " + str(error)], unknown=True
         )
 
 
@@ -492,7 +473,6 @@ def analyze_domain(value, consent_vt=False):
 
     try:
         domain = normalize_domain(value)
-
         evidence.append("Domen formati to'g'ri.")
 
         dns = dns_lookup(domain)
@@ -511,7 +491,8 @@ def analyze_domain(value, consent_vt=False):
             threat_types.append("Typosquatting ehtimoli")
 
         words = [
-            word for word in SUSPICIOUS_WORDS if word in domain
+            word for word in SUSPICIOUS_WORDS
+            if word in domain
         ]
 
         if words:
@@ -533,9 +514,8 @@ def analyze_domain(value, consent_vt=False):
                 suspicious = vt.get("suspicious", 0)
 
                 evidence.append(
-                    "VirusTotal hisoboti olindi: zararli aniqlashlar = "
-                    + str(malicious)
-                    + ", shubhali = " + str(suspicious) + "."
+                    "VirusTotal: zararli = " + str(malicious) +
+                    ", shubhali = " + str(suspicious)
                 )
 
                 if malicious > 0:
@@ -543,52 +523,32 @@ def analyze_domain(value, consent_vt=False):
                     threat_types.append(
                         "VirusTotal zararli domen indikatori"
                     )
-
                 elif suspicious > 0:
                     score = max(score, 40)
                     threat_types.append(
                         "Shubhali domen reputatsiyasi"
                     )
-
-                else:
-                    evidence.append(
-                        "VirusTotal hisobotida zararli yoki shubhali "
-                        "aniqlash qayd etilmadi; bu kafolat emas."
-                    )
-
             else:
                 evidence.append(
                     "VirusTotal: " +
                     vt.get("message", "Tekshiruv bajarilmadi.")
                 )
-
         else:
             evidence.append(
-                "VirusTotal tekshiruvi rozilik berilmagani sababli bajarilmadi."
+                "VirusTotal rozilik berilmagani sababli ishlatilmadi."
             )
 
         unknown = score == 0 and not successful_checks
-
-        report = risk_result(
-            score,
-            evidence,
-            unknown=unknown
-        )
+        report = risk_result(score, evidence, unknown)
 
         report["domain"] = domain
         report["dns"] = dns
         report["threat_types"] = sorted(set(threat_types))
-
-        if successful_checks:
-            report["source"] = (
-                "DNS + mahalliy tahlil + " +
-                " + ".join(successful_checks)
-            )
-        else:
-            report["source"] = (
-                "DNS va mahalliy tahlil; tashqi reputatsiya tasdiqlanmadi"
-            )
-
+        report["source"] = (
+            "DNS + mahalliy tahlil + VirusTotal"
+            if successful_checks
+            else "DNS va mahalliy tahlil"
+        )
         report["external_checks"] = {
             "attempted": attempted_checks,
             "successful": successful_checks
@@ -598,9 +558,7 @@ def analyze_domain(value, consent_vt=False):
 
     except ValueError as error:
         return risk_result(
-            0,
-            ["Domen xatosi: " + str(error)],
-            unknown=True
+            0, ["Domen xatosi: " + str(error)], unknown=True
         )
 
 
@@ -611,9 +569,7 @@ def analyze_domain(value, consent_vt=False):
 def analyze_file(uploaded, consent_vt=False):
     if not uploaded or not uploaded.filename:
         return risk_result(
-            0,
-            ["Fayl tanlanmagan."],
-            unknown=True
+            0, ["Fayl tanlanmagan."], unknown=True
         )
 
     filename = os.path.basename(
@@ -624,8 +580,7 @@ def analyze_file(uploaded, consent_vt=False):
 
     if len(data) > MAX_SIZE:
         return risk_result(
-            0,
-            ["Fayl 20 MB hajm chegarasidan katta."],
+            0, ["Fayl 20 MB hajm chegarasidan katta."],
             unknown=True
         )
 
@@ -673,19 +628,18 @@ def analyze_file(uploaded, consent_vt=False):
 
                 if has_manifest and has_dex:
                     is_apk = True
-
                     evidence.append(
-                        "APK tuzilmasi aniqlandi: AndroidManifest.xml va DEX fayli mavjud."
+                        "APK tuzilmasi aniqlandi: "
+                        "AndroidManifest.xml va DEX mavjud."
                     )
 
                     if has_native:
                         evidence.append(
                             "APK ichida native .so kutubxonasi mavjud."
                         )
-
                 else:
                     evidence.append(
-                        "ZIP arxivi topildi, ammo APK tuzilmasi to'liq tasdiqlanmadi."
+                        "ZIP topildi, ammo APK tuzilmasi tasdiqlanmadi."
                     )
 
         except zipfile.BadZipFile:
@@ -719,72 +673,47 @@ def analyze_file(uploaded, consent_vt=False):
             suspicious = vt.get("suspicious", 0)
 
             evidence.append(
-                "VirusTotal hisoboti olindi: zararli aniqlashlar = "
-                + str(malicious)
-                + ", shubhali = " + str(suspicious) + "."
+                "VirusTotal: zararli = " + str(malicious) +
+                ", shubhali = " + str(suspicious)
             )
 
             if malicious > 0:
                 score = max(score, 90)
-                threat_types.append(
-                    "VirusTotal zararli fayl indikatori"
-                )
-
+                threat_types.append("VirusTotal zararli fayl indikatori")
             elif suspicious > 0:
                 score = max(score, 40)
-                threat_types.append(
-                    "Shubhali fayl reputatsiyasi"
-                )
-
-            else:
-                evidence.append(
-                    "VirusTotal hisobotida zararli yoki shubhali "
-                    "aniqlash qayd etilmadi; bu kafolat emas."
-                )
-
+                threat_types.append("Shubhali fayl reputatsiyasi")
         else:
             evidence.append(
                 "VirusTotal: " +
                 vt.get("message", "Tekshiruv bajarilmadi.")
             )
-
     else:
         evidence.append(
-            "VirusTotal xesh qidiruvi rozilik berilmagani sababli bajarilmadi."
+            "VirusTotal rozilik berilmagani sababli ishlatilmadi."
         )
 
     if ext in EXECUTABLE_EXTENSIONS:
         evidence.append(
-            "Eslatma: kengaytma fayl bajarilishini bildiradi, "
+            "Kengaytma fayl bajarilishini bildiradi, "
             "ammo o'zi zararli ekanini isbotlamaydi."
         )
 
     unknown = score == 0 and not successful_checks
-
-    report = risk_result(
-        score,
-        evidence,
-        unknown=unknown
-    )
+    report = risk_result(score, evidence, unknown)
 
     report["sha256"] = digest
     report["threat_types"] = sorted(set(threat_types))
     report["file_type"] = "APK" if is_apk else ext or "Noma'lum"
-
-    if successful_checks:
-        report["source"] = (
-            "Mahalliy fayl tahlili + VirusTotal xesh hisoboti"
-        )
-    else:
-        report["source"] = (
-            "Faqat mahalliy fayl tahlili; tashqi reputatsiya tasdiqlanmadi"
-        )
-
+    report["source"] = (
+        "Mahalliy fayl tahlili + VirusTotal xesh hisoboti"
+        if successful_checks
+        else "Faqat mahalliy fayl tahlili"
+    )
     report["external_checks"] = {
         "attempted": attempted_checks,
         "successful": successful_checks
     }
-
     report["file_uploaded_to_vt"] = False
 
     return report
@@ -807,9 +736,7 @@ def format_report(report):
     if types:
         lines.extend(["- " + item for item in types])
     else:
-        lines.append(
-            "- Aniq zararli tahdid turi tasdiqlanmadi."
-        )
+        lines.append("- Aniq zararli tahdid turi tasdiqlanmadi.")
 
     lines.append("")
     lines.append("TEXNIK DALILLAR:")
@@ -823,8 +750,7 @@ def format_report(report):
         report["recommendation"],
         "",
         "TAHLIL MANBASI: " + report.get(
-            "source",
-            "Mahalliy tahlil"
+            "source", "Mahalliy tahlil"
         )
     ])
 
@@ -834,16 +760,16 @@ def format_report(report):
 
     if attempted:
         lines.extend(["", "TASHQI TEKSHIRUV:"])
-        lines.append(
-            "- So'ralgan: " + ", ".join(attempted)
-        )
+        lines.append("- So'ralgan: " + ", ".join(attempted))
         lines.append(
             "- Muvaffaqiyatli: " +
             (", ".join(successful) if successful else "Hech biri")
         )
 
     return "\n".join(lines)
-    # =====================================================
+
+
+# =====================================================
 # 9. SAYTNING HTML INTERFEYSI
 # =====================================================
 
@@ -854,6 +780,7 @@ PAGE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Husan Security</title>
+
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -862,16 +789,19 @@ PAGE = """
             margin: 0;
             padding: 30px;
         }
+
         .container {
             max-width: 850px;
             margin: auto;
         }
+
         .card {
             background: #1e293b;
             padding: 25px;
             margin-bottom: 20px;
             border-radius: 12px;
         }
+
         input, select, button {
             width: 100%;
             padding: 12px;
@@ -879,31 +809,46 @@ PAGE = """
             box-sizing: border-box;
             border-radius: 6px;
         }
+
         button {
             background: #2563eb;
             color: white;
             border: none;
             cursor: pointer;
         }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
         pre {
             white-space: pre-wrap;
             overflow-wrap: anywhere;
             line-height: 1.6;
         }
+
         label {
             display: block;
             margin: 12px 0;
         }
     </style>
 </head>
+
 <body>
 <div class="container">
+
     <div class="card">
         <h1>HUSAN SECURITY</h1>
-        <p>Havola, domen va fayllarni xavfsizlik bo‘yicha dastlabki tahlil qilish.</p>
+
+        <p>
+            Havola, domen va fayllarni xavfsizlik bo'yicha
+            dastlabki tahlil qilish.
+        </p>
 
         <form method="POST" enctype="multipart/form-data">
+
             <label>Tahlil turini tanlang:</label>
+
             <select name="mode" required>
                 <option value="url">URL havolani tekshirish</option>
                 <option value="domain">Domenni tekshirish</option>
@@ -911,10 +856,15 @@ PAGE = """
             </select>
 
             <label>URL yoki domen:</label>
-            <input type="text" name="value"
-                   placeholder="https://example.com">
+
+            <input
+                type="text"
+                name="value"
+                placeholder="https://example.com"
+            >
 
             <label>Fayl yoki APK tanlang:</label>
+
             <input type="file" name="uploaded_file">
 
             <label>
@@ -928,6 +878,7 @@ PAGE = """
             </label>
 
             <button type="submit">TAHLILNI BOSHLASH</button>
+
         </form>
     </div>
 
@@ -937,6 +888,7 @@ PAGE = """
         <pre>{{ result }}</pre>
     </div>
     {% endif %}
+
 </div>
 </body>
 </html>
@@ -989,9 +941,10 @@ def home():
             result = format_report(report)
 
         except Exception:
+            app.logger.exception("Tahlil vaqtida xatolik")
             result = (
                 "Tahlil vaqtida kutilmagan xatolik yuz berdi. "
-                "Kiritilgan ma'lumot va server loglarini tekshiring."
+                "Server loglarini tekshiring."
             )
 
     return render_template_string(PAGE, result=result)
