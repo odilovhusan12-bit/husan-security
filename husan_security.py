@@ -1,12 +1,3 @@
-</form>
-{% if kind == 'url' %}<div class="result">{{ result }}</div>{% endif %}
-</section>
-
-<section id="domain" class="{{ 'hidden' if kind != 'domain' else '' }}">
-<h2>Domen tahlili</h2>
-<p>Domen nomini kiriting.</p>
-<form method="post">
-<input type="hidden" name="action" value="domain">
 <input name="domain" maxlength="253" placeholder="example.com" required>
 <label><input type="checkbox" name="consent_vt" value="yes"> VirusTotal bilan tekshirishga roziman (domen tashqi xizmatga yuboriladi).</label>
 <button type="submit">Domenni tekshirish</button>
