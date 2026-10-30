@@ -1,3 +1,4 @@
+
 import os
 import re
 import io
@@ -11,6 +12,9 @@ import requests
 
 from flask import Flask, request, render_template_string
 from urllib.parse import urlparse
+
+MAX_SIZE = 20 * 1024 * 1024
+TIMEOUT = 10
 
 app = Flask(__name__)
 
