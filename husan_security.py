@@ -840,3 +840,164 @@ def format_report(report):
         )
 
     return "\n".join(lines)
+    # =====================================================
+# 9. SAYTNING HTML INTERFEYSI
+# =====================================================
+
+PAGE = """
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Husan Security</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #101827;
+            color: white;
+            margin: 0;
+            padding: 30px;
+        }
+        .container {
+            max-width: 850px;
+            margin: auto;
+        }
+        .card {
+            background: #1e293b;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-radius: 12px;
+        }
+        input, select, button {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            box-sizing: border-box;
+            border-radius: 6px;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        pre {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            line-height: 1.6;
+        }
+        label {
+            display: block;
+            margin: 12px 0;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="card">
+        <h1>HUSAN SECURITY</h1>
+        <p>Havola, domen va fayllarni xavfsizlik bo‘yicha dastlabki tahlil qilish.</p>
+
+        <form method="POST" enctype="multipart/form-data">
+            <label>Tahlil turini tanlang:</label>
+            <select name="mode" required>
+                <option value="url">URL havolani tekshirish</option>
+                <option value="domain">Domenni tekshirish</option>
+                <option value="file">Fayl yoki APK tekshirish</option>
+            </select>
+
+            <label>URL yoki domen:</label>
+            <input type="text" name="value"
+                   placeholder="https://example.com">
+
+            <label>Fayl yoki APK tanlang:</label>
+            <input type="file" name="uploaded_file">
+
+            <label>
+                <input type="checkbox" name="consent_vt" value="yes">
+                VirusTotal orqali tekshirishga roziman
+            </label>
+
+            <label>
+                <input type="checkbox" name="consent_gsb" value="yes">
+                Google Safe Browsing orqali tekshirishga roziman
+            </label>
+
+            <button type="submit">TAHLILNI BOSHLASH</button>
+        </form>
+    </div>
+
+    {% if result %}
+    <div class="card">
+        <h2>TAHLIL NATIJASI</h2>
+        <pre>{{ result }}</pre>
+    </div>
+    {% endif %}
+</div>
+</body>
+</html>
+"""
+
+
+# =====================================================
+# 10. FLASK SAHIFA YO'LLARI
+# =====================================================
+
+@app.route("/", methods=["GET", "POST"])
+def home():
+    result = None
+
+    if request.method == "POST":
+        mode = request.form.get("mode", "")
+        value = request.form.get("value", "").strip()
+
+        consent_vt = request.form.get("consent_vt") == "yes"
+        consent_gsb = request.form.get("consent_gsb") == "yes"
+
+        try:
+            if mode == "url":
+                report = analyze_url(
+                    value,
+                    consent_vt=consent_vt,
+                    consent_gsb=consent_gsb
+                )
+
+            elif mode == "domain":
+                report = analyze_domain(
+                    value,
+                    consent_vt=consent_vt
+                )
+
+            elif mode == "file":
+                uploaded = request.files.get("uploaded_file")
+                report = analyze_file(
+                    uploaded,
+                    consent_vt=consent_vt
+                )
+
+            else:
+                report = risk_result(
+                    0,
+                    ["Tahlil turi noto'g'ri tanlangan."],
+                    unknown=True
+                )
+
+            result = format_report(report)
+
+        except Exception:
+            result = (
+                "Tahlil vaqtida kutilmagan xatolik yuz berdi. "
+                "Kiritilgan ma'lumot va server loglarini tekshiring."
+            )
+
+    return render_template_string(PAGE, result=result)
+
+
+@app.errorhandler(413)
+def file_too_large(error):
+    return "Fayl hajmi 20 MB dan oshmasligi kerak.", 413
+
+
+if __name__ == "__main__":
+    app.run(debug=False)
